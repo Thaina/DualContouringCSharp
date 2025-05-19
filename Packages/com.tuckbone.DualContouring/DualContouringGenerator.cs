@@ -2,6 +2,8 @@
 
 using UnityEngine;
 
+using Unity.Jobs;
+using Unity.Collections;
 using Unity.Mathematics;
 
 using Code.Utils;
@@ -18,12 +20,22 @@ public class DualContouringGenerator : MonoBehaviour
     void Start()
     {
         thresholdIndex = (thresholdIndex + 1) % MAX_THRESHOLDS;
-        var vertices = new List<float3x2>();
-        var indices = new List<int>();
 
-        using var root = Octree.BuildOctree(-octreeSize / 2,octreeSize,THRESHOLDS[thresholdIndex],vertices,indices);
+        using var octreeJob = new Octree.OctreeJob() {
+            nodes = new NativeList<Octree.Node>(8 * (((int)math.pow(octreeSize,3) * 8) - 1) / (8 - 1),Allocator.Persistent),
+            indexBuffer = new NativeList<int>(Allocator.Persistent),
+            vertexBuffer = new NativeList<float3x2>(Allocator.Persistent),
+            min = -octreeSize / 2,
+            size = octreeSize,
+            threshold = THRESHOLDS[thresholdIndex]
+        };
 
-        if(root[0].Type == Octree.NodeType.None)
+        octreeJob.Schedule(1,default).Complete();
+
+        var vertices = octreeJob.vertexBuffer.AsArray().ToArray();
+        var indices = octreeJob.indexBuffer.AsArray();
+
+        if(octreeJob.nodes[0].Type == Octree.NodeType.None)
             Debug.Log("root is null");
 
         var go = new GameObject("Mesh");
@@ -35,10 +47,10 @@ public class DualContouringGenerator : MonoBehaviour
 
         meshRenderer.sharedMaterial = material;
 
-        var vertArray = new Vector3[vertices.Count];
-        var normArray = new Vector3[vertices.Count];
-        var uvs = new Vector2[vertices.Count];
-        for(int i = 0; i < vertices.Count; i++)
+        var vertArray = new Vector3[vertices.Length];
+        var normArray = new Vector3[vertices.Length];
+        var uvs = new Vector2[vertices.Length];
+        for(int i = 0; i < vertices.Length; i++)
         {
             var pos = vertices[i][0];
             vertArray[i] = pos;
