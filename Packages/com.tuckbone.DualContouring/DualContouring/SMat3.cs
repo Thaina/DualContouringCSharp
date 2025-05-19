@@ -51,4 +51,28 @@ public struct SMat3
     {
         return new float3(math.dot(c0,v),math.dot(c1,v),math.dot(c2,v));
     }
+
+    public static SMat3 operator +(in SMat3 l,in SMat3 r)
+    {
+        SMat3 res;
+        res.m00 = l.m00 + r.m00;
+        res.m01 = l.m01 + r.m01;
+        res.m02 = l.m02 + r.m02;
+        res.m11 = l.m11 + r.m11;
+        res.m12 = l.m12 + r.m12;
+        res.m22 = l.m22 + r.m22;
+        return res;
+    }
+
+    public static SMat3 operator *(in float3 v,in SMat3 m)
+    {
+        SMat3 res;
+        res.m00 = v.x * m.m00;
+        res.m01 = v.x * m.m01;
+        res.m02 = v.x * m.m02;
+        res.m11 = v.y * m.m11;
+        res.m12 = v.y * m.m12;
+        res.m22 = v.z * m.m22;
+        return res;
+    }
 }

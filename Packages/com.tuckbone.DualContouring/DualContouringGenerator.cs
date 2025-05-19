@@ -1,8 +1,10 @@
-﻿using UnityEngine;
-using Code.Utils;
-using System.Collections.Generic;
-using System;
+﻿using System.Collections.Generic;
+
+using UnityEngine;
+
 using Unity.Mathematics;
+
+using Code.Utils;
 
 public class DualContouringGenerator : MonoBehaviour
 {
@@ -10,22 +12,18 @@ public class DualContouringGenerator : MonoBehaviour
 	static float[] THRESHOLDS = new float[MAX_THRESHOLDS] { -1.0f, 0.1f, 1.0f, 10.0f, 50.0f };
 	static int thresholdIndex = -1;
 
-	Octree.Node root = null;
-
     // octreeSize must be a power of two!
 	public int octreeSize = 64;
     public Material material;
-    async Awaitable Start()
+    void Start()
     {
-        PlayerInput.Start();
-
         thresholdIndex = (thresholdIndex + 1) % MAX_THRESHOLDS;
         var vertices = new List<float3x2>();
         var indices = new List<int>();
 
-        root = await Octree.BuildOctree(-octreeSize / 2,octreeSize,THRESHOLDS[thresholdIndex]);
+        using var root = Octree.BuildOctree(-octreeSize / 2,octreeSize,THRESHOLDS[thresholdIndex],vertices,indices);
 
-        if(root == null)
+        if(root[0].Type == Octree.NodeType.None)
             Debug.Log("root is null");
 
         var go = new GameObject("Mesh");
@@ -36,9 +34,6 @@ public class DualContouringGenerator : MonoBehaviour
         var filter = go.AddComponent<MeshFilter>();
 
         meshRenderer.sharedMaterial = material;
-
-        Octree.GenerateMeshFromOctree(root,ref vertices,ref indices);
-
 
         var vertArray = new Vector3[vertices.Count];
         var normArray = new Vector3[vertices.Count];
@@ -62,16 +57,10 @@ public class DualContouringGenerator : MonoBehaviour
     public float moveSpeed = 10;
     void Update()
     {
-        PlayerInput.Update(out var move);
-
         var cam = Camera.main.transform;
+        PlayerInput.Update(cam,out var move);
         cam.position += ((cam.right * move.x) + (cam.up * move.y) + (cam.forward * move.z)) * moveSpeed * Time.deltaTime;
 	}
-
-    void OnApplicationQuit()
-    {
-        Octree.DestroyOctree(ref root);
-    }
 
     void OnGUI ()
     {

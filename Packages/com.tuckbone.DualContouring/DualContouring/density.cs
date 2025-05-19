@@ -40,12 +40,12 @@ public static class glm
 
     public static float Density_Func(float3 worldPosition)
     {
-        float MAX_HEIGHT = 20.0f;
+        float MAX_HEIGHT = 10.0f;
         float noise = FractalNoise(4, 0.5343f, 2.2324f, 0.68324f, worldPosition.xz);
         float terrain = worldPosition.y - (MAX_HEIGHT * noise);
 
-        float cube = Cuboid(worldPosition, new float3(-4.0f, 10.0f, -4.0f), new float3(12));
-        float sphere = Sphere(worldPosition, new float3(15.0f, 2.5f, 1.0f), 16.0f);
+        float cube = Cuboid(worldPosition, new float3(-1, 3, -1), new float3(5));
+        float sphere = Sphere(worldPosition, new float3(5, 1, 1), 8);
 
         return math.max(-cube, math.min(sphere, terrain));
     }

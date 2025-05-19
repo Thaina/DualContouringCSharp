@@ -19,17 +19,16 @@ License along with this library; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
-using Code.Utils;
-using JetBrains.Annotations;
-using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+
+using UnityEngine;
+
 using Unity.Collections;
 using Unity.Mathematics;
-using UnityEngine;
-using UnityEngine.Profiling;
 
-public class Octree
+using Code.Utils;
+
+public static class Octree
 {
     private static Color[] drawColors = new Color[]
     {
@@ -127,15 +126,13 @@ public class Octree
     #endregion
 
 
-    public static Node SimplifyOctree(Node node,float threshold)
+    public static bool SimplifyOctree(ref Node node,float threshold)
     {
-        if(node == null)
-        {
-            return null;
-        }
+        if(node.Type == NodeType.None)
+            return false;
 
         if(!node.IsInternal)
-            return node;
+            return true;
 
         var qef = new QefSolver();
         int[] signs = new int[8] { -1,-1,-1,-1,-1,-1,-1,-1 };
@@ -145,8 +142,8 @@ public class Octree
 
         for(int i = 0; i < 8; i++)
         {
-            var child = node.children[i] = SimplifyOctree(node.children[i],threshold);
-            if(child == null)
+            ref var child = ref node.children[i];
+            if(!SimplifyOctree(ref child,threshold))
                 continue;
 
             if(child.IsInternal)
@@ -165,7 +162,7 @@ public class Octree
         if(!isCollapsible)
         {
             // at least one child is an internal node, can't collapse
-            return node;
+            return true;
         }
 
         qef.solve(out var position,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
@@ -175,7 +172,7 @@ public class Octree
         if(error > threshold)
         {
             // this collapse breaches the threshold
-            return node;
+            return true;
         }
 
         if(math.any(position < node.min) || math.any(position > (node.min + node.size)))
@@ -197,8 +194,8 @@ public class Octree
         drawInfo.averageNormal = Vector3.zero;
         for(int i = 0; i < 8; i++)
         {
-            var child = node.children[i];
-            if(child != null && child.IsPsuedoOrLeaf)
+            ref var child = ref node.children[i];
+            if(child.Type == NodeType.None && child.IsPsuedoOrLeaf)
             {
                 drawInfo.averageNormal += child.drawInfo.averageNormal;
             }
@@ -216,12 +213,12 @@ public class Octree
         node.Type = NodeType.Psuedo;
         node.drawInfo = drawInfo;
 
-        return node;
+        return true;
     }
 
-    public static void GenerateVertexIndices(Node node,List<float3x2> vertexBuffer)
+    public static void GenerateVertexIndices(ref Node node,List<float3x2> vertexBuffer)
     {
-        if(node == null)
+        if(node.Type == NodeType.None)
         {
             return;
         }
@@ -230,7 +227,7 @@ public class Octree
         {
             for(int i = 0; i < 8; i++)
             {
-                GenerateVertexIndices(node.children[i],vertexBuffer);
+                GenerateVertexIndices(ref node.children[i],vertexBuffer);
             }
         }
 
@@ -242,7 +239,7 @@ public class Octree
         }
     }
 
-    public static void ContourProcessEdge(Node[] node,int dir,List<int> indexBuffer)
+    public static void ContourProcessEdge(in Chunk4<Node> node,int dir,List<int> indexBuffer)
     {
         int minSize = 1000000;		// arbitrary big number
         int minIndex = 0;
@@ -297,9 +294,9 @@ public class Octree
         }
     }
 
-    public static void ContourEdgeProc(Node[] node,int dir,List<int> indexBuffer)
+    public static void ContourEdgeProc(in Chunk4<Node> node,int dir,List<int> indexBuffer)
     {
-        if(node[0] == null || node[1] == null || node[2] == null || node[3] == null)
+        if(node[0].Type == NodeType.None || node[1].Type == NodeType.None || node[2].Type == NodeType.None || node[3].Type == NodeType.None)
         {
             return;
         }
@@ -312,28 +309,23 @@ public class Octree
 
         for(int i = 0; i < 2; i++)
         {
-            var edgeNodes = new Node[4];
             int4 c = edgeProcEdgeMask[dir][i];
 
-            int4 nodeIndexes = -1;
+            var edgeNodes = node;
 
             for(int j = 0; j < 4; j++)
             {
-                if(node[j].IsPsuedoOrLeaf)
-                    edgeNodes[j] = node[j];
-                else edgeNodes[j] = node[j].children[c[j]];
-
                 if(!node[j].IsPsuedoOrLeaf)
-                    nodeIndexes[j] = c[j];
+                    edgeNodes.indexes[j] = node[j].childIndex + c[j];
             }
 
             ContourEdgeProc(edgeNodes,dir,indexBuffer);
         }
     }
 
-    public static void ContourFaceProc(Node[] node,int dir,List<int> indexBuffer)
+    public static void ContourFaceProc(in Chunk2<Node> node,int dir,List<int> indexBuffer)
     {
-        if(node[0] == null || node[1] == null)
+        if(node[0].Type == NodeType.None || node[1].Type == NodeType.None)
             return;
 
         if(!node[0].IsInternal && !node[1].IsInternal)
@@ -341,14 +333,13 @@ public class Octree
 
         for(int i = 0; i < 4; i++)
         {
-            var faceNodes = new Node[2];
+            var faceNodes = node;
             int2 c = faceProcFaceMask[dir][i];
 
             for(int j = 0; j < 2; j++)
             {
-                if(!node[j].IsInternal)
-                    faceNodes[j] = node[j];
-                else faceNodes[j] = node[j].children[c[j]];
+                if(node[j].IsInternal)
+                    faceNodes.indexes[j] = node[j].childIndex + c[j];
             }
 
             ContourFaceProc(faceNodes,dir,indexBuffer);
@@ -361,53 +352,43 @@ public class Octree
             ref var control = ref masks.control[i];
             ref var mask = ref masks.mask[i];
 
-            var edgeNodes = new Node[4];
+            var edgeNodes = node.list.ToChunk(new int4());
             int4 order = orders[control[0]];
             for(int j = 0; j < 4; j++)
             {
                 var n = node[order[j]];
                 if(n.IsPsuedoOrLeaf)
-                    edgeNodes[j] = n;
-                else edgeNodes[j] = n.children[mask[j]];
+                    edgeNodes.indexes[j] = node.indexes[order[j]];
+                else edgeNodes.indexes[j] = n.childIndex + mask[j];
             }
 
             ContourEdgeProc(edgeNodes,control[1],indexBuffer);
         }
     }
 
-    public static void ContourCellProc(Node node,List<int> indexBuffer)
+    public static void ContourCellProc(ref Node node,List<int> indexBuffer)
     {
-        if(node == null || !node.IsInternal)
+        if(node.Type == NodeType.None || !node.IsInternal)
         {
             return;
         }
 
         for(int i = 0; i < 8; i++)
         {
-            ContourCellProc(node.children[i],indexBuffer);
+            ContourCellProc(ref node.children[i],indexBuffer);
         }
 
         for(int i = 0; i < 12; i++)
         {
-            var faceNodes = new Node[2];
             var c = cellProcFaceMask[i];
-
-            faceNodes[0] = node.children[c[0]];
-            faceNodes[1] = node.children[c[1]];
-
+            var faceNodes = node.children.list.ToChunk(node.childIndex + c);
             ContourFaceProc(faceNodes,i / 4,indexBuffer);
         }
 
         for(int i = 0; i < 6; i++)
         {
-            var edgeNodes = new Node[4];
-
             int4 c = cellProcEdgeMask[i];
-            for(int j = 0; j < 4; j++)
-            {
-                edgeNodes[j] = node.children[c[j]];
-            }
-
+            var edgeNodes = node.children.list.ToChunk(node.childIndex + c);
             ContourEdgeProc(edgeNodes,i / 2,indexBuffer);
         }
     }
@@ -455,11 +436,11 @@ public class Octree
         public QefSolver.QefData qef;
     }
 
-    public static Node ConstructLeaf(Node leaf)
+    public static bool ConstructLeaf(ref Node leaf)
     {
-        if(leaf == null || leaf.size != 1)
+        if(leaf.Type == NodeType.None || leaf.size != 1)
         {
-            return null;
+            return false;
         }
 
         int corners = 0;
@@ -476,8 +457,8 @@ public class Octree
             // voxel is full inside or outside the volume
             //delete leaf
             //setting as null isn't required by the GC in C#... but its in the original, so why not!
-            leaf = null;
-            return null;
+            leaf = default;
+            return false;
         }
 
         // otherwise the voxel contains the surface, so find the edge intersections
@@ -523,76 +504,102 @@ public class Octree
             drawInfo.position = qef.getMassPoint();
         }
 
-        drawInfo.averageNormal = Vector3.Normalize(averageNormal / (float)edgeCount);
+        drawInfo.averageNormal = Vector3.Normalize(averageNormal / edgeCount);
         drawInfo.corners = corners;
 
         leaf.Type = NodeType.Leaf;
         leaf.drawInfo = drawInfo;
 
-        return leaf;
+        return true;
     }
 
-    public static async Awaitable<Node> ConstructOctreeNodes(Node node)
+    public static bool ConstructOctreeNodes(in NativeList<Node> nodes,ref Node node)
     {
-        await Awaitable.BackgroundThreadAsync();
-        if(node == null)
-            return null;
+        if(node.Type == NodeType.None)
+            return false;
 
         if(node.size == 1)
-            return ConstructLeaf(node);
+            return ConstructLeaf(ref node);
 
         int childSize = node.size / 2;
         bool hasChildren = false;
 
         for(int i = 0; i < 8; i++)
         {
-            var child = new Node();
+            node.children[i] = new Node(nodes,NodeType.Internal);
+            ref var child = ref node.children[i];
             child.size = childSize;
             child.min = node.min + (CHILD_MIN_OFFSETS[i] * childSize);
-            child.Type = NodeType.Internal;
 
-            node.children[i] = await ConstructOctreeNodes(child);
-            hasChildren |= node.children[i] != null;
+            if(ConstructOctreeNodes(nodes,ref child))
+                hasChildren |= true;
         }
 
         if(!hasChildren)
-            node = null;
+            node = default;
 
-        return node;
+        return hasChildren;
     }
 
-    public static async Awaitable<Node> BuildOctree(float3 min,int size,float threshold)
+    public struct Chunk2<T> where T : unmanaged
+    {
+        public int2 indexes;
+        public NativeList<T> list;
+        public ref T this[int i] => ref list.ElementAt(indexes[i]);
+    }
+
+    public struct Chunk4<T> where T : unmanaged
+    {
+        public int4 indexes;
+        public NativeList<T> list;
+        public ref T this[int i] => ref list.ElementAt(indexes[i]);
+    }
+
+    public struct Chunk8<T> where T : unmanaged
+    {
+        public int4x2 indexes;
+        public NativeList<T> list;
+        public ref T this[int i] => ref list.ElementAt(indexes[i / 4][i % 4]);
+    }
+
+    public static Chunk2<T> ToChunk<T>(in this NativeList<T> list,int2 indexes) where T : unmanaged => new() { list = list,indexes = indexes };
+    public static Chunk4<T> ToChunk<T>(in this NativeList<T> list,int4 indexes) where T : unmanaged => new() { list = list,indexes = indexes };
+    public static Chunk8<T> ToChunk<T>(in this NativeList<T> list,int4x2 indexes) where T : unmanaged => new() { list = list,indexes = indexes };
+
+    public static NativeList<Node> BuildOctree(float3 min,int size,float threshold,List<float3x2> vertexBuffer,List<int> indexBuffer)
     {
         Debug.Log(string.Format("Building Octree at {0}, with size of {1} and threshold of {2}",min,size,threshold));
 
-        var root = new Node(NodeType.Internal);
+        var nodes = new NativeList<Node>(1048576,Allocator.Persistent);
+
+        nodes.Add(default(Node));
+        ref var root = ref nodes.ElementAt(0);
+        root = new Node(nodes,NodeType.Internal);
         root.min = min;
         root.size = size;
 
-        root = await ConstructOctreeNodes(root);
-        root = SimplifyOctree(root,threshold);
-        return root;
-    }
+        if(ConstructOctreeNodes(nodes,ref root))
+            SimplifyOctree(ref root,threshold);
 
-    public static void GenerateMeshFromOctree(Node node,ref List<float3x2> vertexBuffer,ref List<int> indexBuffer)
-    {
-        if(node == null)
-            return;
+        if(root.Type == NodeType.None)
+            return nodes;
 
         vertexBuffer ??= new List<float3x2>();
         indexBuffer ??= new List<int>();
 
-        GenerateVertexIndices(node,vertexBuffer);
-        ContourCellProc(node,indexBuffer);
+        GenerateVertexIndices(ref root,vertexBuffer);
+        ContourCellProc(ref root,indexBuffer);
+
+        return nodes;
     }
 
-    public static void DrawOctree(Node rootNode,int colorIndex)
+    public static void DrawOctree(ref Node rootNode,int colorIndex)
     {
-        if(rootNode != null && rootNode.children.Length > 0)
+        if(rootNode.Type != NodeType.None)
         {
-            for(int i = 0; i < rootNode.children.Length; i++)
+            for(int i = 0; i < 8; i++)
             {
-                DrawOctree(rootNode.children[i],colorIndex + 1);
+                DrawOctree(ref rootNode.children[i],colorIndex + 1);
             }
 
             DrawOctreeNode(rootNode,drawColors[colorIndex]);
@@ -606,7 +613,7 @@ public class Octree
 
     public static void DestroyOctree(ref Node node)
     {
-        if(node == null)
+        if(node.Type == NodeType.None)
         {
             return;
         }
@@ -616,7 +623,7 @@ public class Octree
             DestroyOctree(ref node.children[i]);
         }
 
-        node = null;
+        node = default;
     }
 
     public enum NodeType
@@ -627,7 +634,7 @@ public class Octree
         Leaf
     }
 
-    public class Node
+    public struct Node
     {
         public NodeType Type;
         public bool IsInternal => Type == NodeType.Internal;
@@ -635,21 +642,20 @@ public class Octree
 
         public float3 min;
         public int size;
-        public Node[] children;
+        public int childIndex;
         public DrawInfo drawInfo;
+        public Chunk8<Node> children;
 
-        public Node(NodeType _type = NodeType.None)
+        public Node(in NativeList<Node> nodes,NodeType _type = NodeType.None)
         {
             Type = _type;
             min = 0;
             size = 0;
-            drawInfo = new();
+            drawInfo = default;
 
-            children = new Node[8];
-            for(int i = 0; i < 8; i++)
-            {
-                children[i] = null;
-            }
+            childIndex = nodes.Length;
+            nodes.AddReplicate(default,8);
+            children = nodes.ToChunk(childIndex + new int4x2(new(0,1,2,3),new(4,5,6,7)));
         }
     }
 }
