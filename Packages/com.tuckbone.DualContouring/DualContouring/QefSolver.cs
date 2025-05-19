@@ -27,64 +27,40 @@
 
 using System;
 using UnityEngine;
+using Unity.Mathematics;
 
-public class QefSolver
+public ref struct QefSolver
 {
     private QefData data;
     private SMat3 ata;
-    private Vector3 atb, massPoint, x;
+    private float3 atb, massPoint, x;
     private bool hasSolution;
-
-    public QefSolver()
-    {
-        data = new QefData();
-        ata = new SMat3();
-        atb = Vector3.zero;
-        massPoint = Vector3.zero;
-        x = Vector3.zero;
-        hasSolution = false;
-    }
-
-    private QefSolver(QefSolver rhs)
-    { }
 
     public Vector3 getMassPoint()
     {
         return massPoint;
     }
 
-    public void add(float px, float py, float pz, float nx, float ny, float nz)
+    public void add(float3 p,float3 n)
     {
         hasSolution = false;
-    
-        Vector3 tmpv = new Vector3(nx, ny, nz).normalized;
-        nx = tmpv.x;
-        ny = tmpv.y;
-        nz = tmpv.z;
-   
-        data.ata_00 += nx * nx;
-        data.ata_01 += nx * ny;
-        data.ata_02 += nx * nz;
-        data.ata_11 += ny * ny;
-        data.ata_12 += ny * nz;
-        data.ata_22 += nz * nz;
-        float dot = nx * px + ny * py + nz * pz;
-        data.atb_x += dot * nx;
-        data.atb_y += dot * ny;
-        data.atb_z += dot * nz;
+
+        n = math.normalize(n);
+
+        data.ata.m00 += n.x * n.x;
+        data.ata.m01 += n.x * n.y;
+        data.ata.m02 += n.x * n.z;
+        data.ata.m11 += n.y * n.y;
+        data.ata.m12 += n.y * n.z;
+        data.ata.m22 += n.z * n.z;
+        float dot = math.dot(p,n);
+        data.atb += dot * n;
         data.btb += dot * dot;
-        data.massPoint_x += px;
-        data.massPoint_y += py;
-        data.massPoint_z += pz;
+        data.massPoint += p;
         ++data.numPoints;
     }
 
-    public void add(Vector3 p, Vector3 n)
-    {
-        add(p.x, p.y, p.z, n.x, n.y, n.z);
-    }
-
-    public void add(QefData rhs)
+    public void add(in QefData rhs)
     {
         hasSolution = false;
         data.add(rhs);
@@ -96,68 +72,66 @@ public class QefSolver
     }
 
     public float getError()
-        {
-            if (!hasSolution)
-            {
-                throw new ArgumentException("Qef Solver does not have a solution!");
-            }
-
-            return getError(x);
-        }
-
-    public float getError(Vector3 pos)
-        { 
-            if (!hasSolution)
-            {
-                setAta();
-                setAtb();
-            }
-
-        Vector3 atax;
-        MatUtils.vmul_symmetric(out atax, ata, pos);
-        return Vector3.Dot(pos, atax) - 2 * Vector3.Dot(pos, atb) + data.btb;
-        }
-
-    public void reset()
     {
-        hasSolution = false;
-        data.clear();
+        if(!hasSolution)
+        {
+            throw new ArgumentException("Qef Solver does not have a solution!");
+        }
+
+        return getError(x);
     }
 
-    public float solve(Vector3 outx, float svd_tol, int svd_sweeps, float pinv_tol)
+    public float getError(float3 pos)
     {
-        if (data.numPoints == 0)
+        if(!hasSolution)
+        {
+            ata = data.ata;
+            atb = data.atb;
+        }
+
+        var atax = ata.vmul_symmetric(pos);
+        return math.dot(pos,atax) - 2 * math.dot(pos,atb) + data.btb;
+    }
+
+    public float solve(out Vector3 outx,float svd_tol,int svd_sweeps,float pinv_tol)
+    {
+        if(data.numPoints == 0)
         {
             throw new ArgumentException("...");
         }
 
-        massPoint.Set(data.massPoint_x, data.massPoint_y, data.massPoint_z);
-        massPoint *= (1.0f / data.numPoints);
-        setAta();
-        setAtb();
-        Vector3 tmpv;
-        MatUtils.vmul_symmetric(out tmpv, ata, massPoint);
+        massPoint = data.massPoint / data.numPoints;
+        ata = data.ata;
+        atb = data.atb;
+        var tmpv = ata.vmul_symmetric(massPoint);
         atb = atb - tmpv;
-        x = Vector3.zero;
-        float result = SVD.solveSymmetric(ata, atb, x, svd_tol, svd_sweeps, pinv_tol);
+        float result = SVD.solveSymmetric(ata,atb,out var x,svd_tol,svd_sweeps,pinv_tol);
         x += massPoint * 1;
-        setAtb();
+        atb = data.atb;
         outx = x;
         hasSolution = true;
         return result;
     }
 
-    private void setAta()
+    public struct QefData
     {
-        ata.setSymmetric(data.ata_00, data.ata_01, data.ata_02, data.ata_11, data.ata_12, data.ata_22);
+        public SMat3 ata;
+        public float3 atb,massPoint;
+        public float btb;
+        public int numPoints;
+
+        public void add(in QefData rhs)
+        {
+            ata.m00 += rhs.ata.m00;
+            ata.m01 += rhs.ata.m01;
+            ata.m02 += rhs.ata.m02;
+            ata.m11 += rhs.ata.m11;
+            ata.m12 += rhs.ata.m12;
+            ata.m22 += rhs.ata.m22;
+            atb += rhs.atb;
+            btb += rhs.btb;
+            massPoint += rhs.massPoint;
+            numPoints += rhs.numPoints;
+        }
     }
-
-    private void setAtb()
-    {
-        atb.Set(data.atb_x, data.atb_y, data.atb_z);
-    }
-
-
-    
 }
-    

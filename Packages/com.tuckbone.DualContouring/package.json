@@ -1,0 +1,23 @@
+{
+  "name": "com.tuckbone.dualcontouring",
+  "version": "0.1.0",
+  "displayName": "Dual Contouring",
+  "description": "Dual Contouring implementation for Unity3D terrain generation",
+  "unity": "2020.3",
+  "dependencies": {
+    "com.unity.burst": "1.6.0",
+    "com.unity.mathematics": "1.2.1",
+    "com.unity.collections": "1.0.0"
+  },
+  "keywords": [
+    "terrain",
+    "procedural",
+    "generation",
+    "mesh",
+    "dual contouring"
+  ],
+  "author": {
+    "name": "Tuckbone",
+    "url": "https://github.com/tuckbone/DualContouringCSharp"
+  }
+}

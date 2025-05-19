@@ -20,8 +20,14 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
 using Code.Utils;
+using JetBrains.Annotations;
+using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
+using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 
 public class Octree
 {
@@ -31,7 +37,7 @@ public class Octree
         Color.yellow,
         Color.grey,
         Color.green,
-        Color.blue, 
+        Color.blue,
         Color.black,
         Color.red,
         Color.cyan,
@@ -44,265 +50,215 @@ public class Octree
     public static int QEF_SWEEPS = 4;
 
     #region Readonly Variables
-    public static readonly Vector3[] CHILD_MIN_OFFSETS =
-{
-	// needs to match the vertMap from Dual Contouring impl
-	new Vector3( 0, 0, 0 ),
-	new Vector3( 0, 0, 1 ),
-	new Vector3( 0, 1, 0 ),
-	new Vector3( 0, 1, 1 ),
-	new Vector3( 1, 0, 0 ),
-	new Vector3( 1, 0, 1 ),
-	new Vector3( 1, 1, 0 ),
-	new Vector3( 1, 1, 1 ),
-};
+    public static readonly float3[] CHILD_MIN_OFFSETS = {
+        // needs to match the vertMap from Dual Contouring impl
+        new float3( 0, 0, 0 ),
+        new float3( 0, 0, 1 ),
+        new float3( 0, 1, 0 ),
+        new float3( 0, 1, 1 ),
+        new float3( 1, 0, 0 ),
+        new float3( 1, 0, 1 ),
+        new float3( 1, 1, 0 ),
+        new float3( 1, 1, 1 ),
+    };
 
     // data from the original DC impl, drives the contouring process
 
-    public static readonly int[][] edgevmap = new int[12][] 
-{
-	new int[2]{2,4},new int[2]{1,5},new int[2]{2,6},new int[2]{3,7},	// x-axis 
-	new int[2]{0,2},new int[2]{1,3},new int[2]{4,6},new int[2]{5,7},	// y-axis
-	new int[2]{0,1},new int[2]{2,3},new int[2]{4,5},new int[2]{6,7}		// z-axis
-};
+    public static readonly int2[] edgevmap = new int2[] {
+        new int2(2,4),new int2(1,5),new int2(2,6),new int2(3,7),	// x-axis
+        new int2(0,2),new int2(1,3),new int2(4,6),new int2(5,7),	// y-axis
+        new int2(0,1),new int2(2,3),new int2(4,5),new int2(6,7)		// z-axis
+    };
 
-    public static readonly int[] edgemask = { 5, 3, 6 };
+    public static readonly int4[] faceMap = new int4[6] {
+        new int4(4, 8, 5, 9),
+        new int4(6, 10, 7, 11),
+        new int4(0, 8, 1, 10),
+        new int4(2, 9, 3, 11),
+        new int4(0, 4, 2, 6),
+        new int4(1, 5, 3, 7)
+    };
 
-    public static readonly int[][] vertMap = new int[8][]  
-{
-	new int[3]{0,0,0},
-	new int[3]{0,0,1},
-	new int[3]{0,1,0},
-	new int[3]{0,1,1},
-	new int[3]{1,0,0},
-	new int[3]{1,0,1},
-	new int[3]{1,1,0},
-	new int[3]{1,1,1}
-};
+    public static readonly int2[] cellProcFaceMask = new int2[] {
+        new int2(0,4),
+        new int2(1,5),
+        new int2(2,6),
+        new int2(3,7),
+        new int2(0,2),
+        new int2(4,6),
+        new int2(1,3),
+        new int2(5,7),
+        new int2(0,1),
+        new int2(2,3),
+        new int2(4,5),
+        new int2(6,7)
+    };
 
-    public static readonly int[][] faceMap = new int[6][]
-{
-    new int[4]{4, 8, 5, 9}, 
-    new int[4]{6, 10, 7, 11},
-    new int[4]{0, 8, 1, 10},
-    new int[4]{2, 9, 3, 11},
-    new int[4]{0, 4, 2, 6},
-    new int[4]{1, 5, 3, 7}
-};
+    public static readonly int4[] cellProcEdgeMask = new int4[] {
+        new (0,1,2,3),
+        new (4,5,6,7),
+        new (0,4,1,5),
+        new (2,6,3,7),
+        new (0,2,4,6),
+        new (1,3,5,7)
+    };
 
-    public static readonly int[][] cellProcFaceMask = new int[12][]
-{
-    new int[3]{0,4,0},
-    new int[3]{1,5,0},
-    new int[3]{2,6,0},
-    new int[3]{3,7,0},
-    new int[3]{0,2,1},
-    new int[3]{4,6,1},
-    new int[3]{1,3,1},
-    new int[3]{5,7,1},
-    new int[3]{0,1,2},
-    new int[3]{2,3,2},
-    new int[3]{4,5,2},
-    new int[3]{6,7,2}
-};
+    public static readonly int2x4[] faceProcFaceMask = new int2x4[] {
+        new ( new (4,0), new (5,1), new (6,2), new (7,3) ),
+        new ( new (2,0), new (6,4), new (3,1), new (7,5) ),
+        new ( new (1,0), new (3,2), new (5,4), new (7,6) )
+    };
 
-    public static readonly int[][] cellProcEdgeMask = new int[6][] 
-{
-    new int[5]{0,1,2,3,0},
-    new int[5]{4,5,6,7,0},
-    new int[5]{0,4,1,5,1},
-    new int[5]{2,6,3,7,1},
-    new int[5]{0,2,4,6,2},
-    new int[5]{1,3,5,7,2}
-};
+    public static readonly (int2x4 control, int4x4 mask)[] faceProcEdgeMask = new (int2x4, int4x4)[] {
+        (new (new (1,1),new (1,1),new (0,2),new (0,2)),new (new (4,0,5,1),new (6,2,7,3),new (4,6,0,2),new (5,7,1,3))),
+        (new (new (0,0),new (0,0),new (1,2),new (1,2)),new (new (2,3,0,1),new (6,7,4,5),new (2,0,6,4),new (3,1,7,5))),
+        (new (new (1,0),new (1,0),new (0,1),new (0,1)),new (new (1,0,3,2),new (5,4,7,6),new (1,5,0,4),new (3,7,2,6)))
+    };
 
-    public static readonly int[][][] faceProcFaceMask = new int[3][][] 
-{
-	new int[4][]{ new int[3]{4,0,0}, new int[3]{5,1,0}, new int[3]{6,2,0}, new int[3]{7,3,0} },
-	new int[4][]{ new int[3]{2,0,1}, new int[3]{6,4,1}, new int[3]{3,1,1}, new int[3]{7,5,1} },
-	new int[4][]{ new int[3]{1,0,2}, new int[3]{3,2,2}, new int[3]{5,4,2}, new int[3]{7,6,2} }
-};
+    public static readonly int4x2[] edgeProcEdgeMask = new int4x2[] {
+        new int4x2(new int4(3,2,1,0),new int4(7,6,5,4)),
+        new int4x2(new int4(5,1,4,0),new int4(7,3,6,2)),
+        new int4x2(new int4(6,4,2,0),new int4(7,5,3,1))
+    };
 
-    public static readonly int[][][] faceProcEdgeMask = new int[3][][]
-{
-	new int[4][]{new int[6]{1,4,0,5,1,1},new int[6]{1,6,2,7,3,1},new int[6]{0,4,6,0,2,2},new int[6]{0,5,7,1,3,2}},
-	new int[4][]{new int[6]{0,2,3,0,1,0},new int[6]{0,6,7,4,5,0},new int[6]{1,2,0,6,4,2},new int[6]{1,3,1,7,5,2}},
-	new int[4][]{new int[6]{1,1,0,3,2,0},new int[6]{1,5,4,7,6,0},new int[6]{0,1,5,0,4,1},new int[6]{0,3,7,2,6,1}}
-};
-
-    public static readonly int[][][] edgeProcEdgeMask = new int[3][][]
-{
-	new int[2][]{new int[5]{3,2,1,0,0},new int[5]{7,6,5,4,0}},
-	new int[2][]{new int[5]{5,1,4,0,1},new int[5]{7,3,6,2,1}},
-	new int[2][]{new int[5]{6,4,2,0,2},new int[5]{7,5,3,1,2}},
-};
-
-    public static readonly int[][] processEdgeMask = new int[3][]
-{
-    new int[4]{3,2,1,0},new int[4]{7,5,6,4},new int[4]{11,10,9,8}
-};
+    public static readonly int4x3 processEdgeMask = new int4x3(
+        new int4(3,2,1,0),new int4(7,5,6,4),new int4(11,10,9,8)
+    );
     #endregion
 
 
-    public static OctreeNode SimplifyOctree(OctreeNode node, float threshold)
+    public static Node SimplifyOctree(Node node,float threshold)
     {
-        if (node == null)
+        if(node == null)
         {
             return null;
         }
 
-        if (node.Type != OctreeNodeType.Node_Internal)
-        {
-            // can't simplify!
+        if(!node.IsInternal)
             return node;
-        }
 
-        QefSolver qef = new QefSolver();
-        int[] signs = new int[8] { -1, -1, -1, -1, -1, -1, -1, -1 };
+        var qef = new QefSolver();
+        int[] signs = new int[8] { -1,-1,-1,-1,-1,-1,-1,-1 };
         int midsign = -1;
         int edgeCount = 0;
         bool isCollapsible = true;
 
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            node.children[i] = SimplifyOctree(node.children[i], threshold);
+            var child = node.children[i] = SimplifyOctree(node.children[i],threshold);
+            if(child == null)
+                continue;
 
-            if (node.children[i] != null)
+            if(child.IsInternal)
+                isCollapsible = false;
+            else
             {
-                OctreeNode child = node.children[i];
+                qef.add(child.drawInfo.qef);
 
-                if (child.Type == OctreeNodeType.Node_Internal)
-                {
-                    isCollapsible = false;
-                }
-                else
-                {
-                    qef.add(child.drawInfo.qef);
+                midsign = (child.drawInfo.corners >> (7 - i)) & 1;
+                signs[i] = (child.drawInfo.corners >> i) & 1;
 
-                    midsign = (child.drawInfo.corners >> (7 - i)) & 1;
-                    signs[i] = (child.drawInfo.corners >> i) & 1;
-
-                    edgeCount++;
-                }
+                edgeCount++;
             }
         }
 
-        if (!isCollapsible)
+        if(!isCollapsible)
         {
             // at least one child is an internal node, can't collapse
             return node;
         }
 
-        Vector3 qefPosition = Vector3.zero;
-        qef.solve(qefPosition, QEF_ERROR, QEF_SWEEPS, QEF_ERROR);
+        qef.solve(out var position,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
         float error = qef.getError();
 
-        // convert to glm vec3 for ease of use
-        Vector3 position = new Vector3(qefPosition.x, qefPosition.y, qefPosition.z);
-
         // at this point the masspoint will actually be a sum, so divide to make it the average
-        if (error > threshold)
+        if(error > threshold)
         {
             // this collapse breaches the threshold
             return node;
         }
 
-        if (position.x < node.min.x || position.x > (node.min.x + node.size) ||
-            position.y < node.min.y || position.y > (node.min.y + node.size) ||
-            position.z < node.min.z || position.z > (node.min.z + node.size))
+        if(math.any(position < node.min) || math.any(position > (node.min + node.size)))
         {
             position = qef.getMassPoint();
         }
 
         // change the node from an internal node to a 'psuedo leaf' node
-        OctreeDrawInfo drawInfo = new OctreeDrawInfo();
+        var drawInfo = new DrawInfo();
         drawInfo.corners = 0;
         drawInfo.index = -1;
 
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            if (signs[i] == -1)
-            {
-                // Undetermined, use centre sign instead
-                drawInfo.corners |= (midsign << i);
-            }
-            else
-            {
-                drawInfo.corners |= (signs[i] << i);
-            }
+            int s = signs[i] == -1 ? midsign : signs[i];
+            drawInfo.corners |= s << i;
         }
 
         drawInfo.averageNormal = Vector3.zero;
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            if (node.children[i] != null)
+            var child = node.children[i];
+            if(child != null && child.IsPsuedoOrLeaf)
             {
-                OctreeNode child = node.children[i];
-                if (child.Type == OctreeNodeType.Node_Psuedo ||
-                    child.Type == OctreeNodeType.Node_Leaf)
-                {
-                    drawInfo.averageNormal += child.drawInfo.averageNormal;
-                }
+                drawInfo.averageNormal += child.drawInfo.averageNormal;
             }
         }
 
-        drawInfo.averageNormal = drawInfo.averageNormal.normalized;
+        drawInfo.averageNormal = math.normalize(drawInfo.averageNormal);
         drawInfo.position = position;
         drawInfo.qef = qef.getData();
 
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            DestroyOctree(node.children[i]);
-            node.children[i] = null;
+            DestroyOctree(ref node.children[i]);
         }
 
-        node.Type = OctreeNodeType.Node_Psuedo;
+        node.Type = NodeType.Psuedo;
         node.drawInfo = drawInfo;
 
         return node;
     }
 
-    public static void GenerateVertexIndices(OctreeNode node, List<MeshVertex> vertexBuffer)
+    public static void GenerateVertexIndices(Node node,List<float3x2> vertexBuffer)
     {
-        if (node == null)
+        if(node == null)
         {
             return;
         }
 
-        if (node.Type != OctreeNodeType.Node_Leaf)
+        if(node.Type != NodeType.Leaf)
         {
-            for (int i = 0; i < 8; i++)
+            for(int i = 0; i < 8; i++)
             {
-                GenerateVertexIndices(node.children[i], vertexBuffer);
+                GenerateVertexIndices(node.children[i],vertexBuffer);
             }
         }
 
-        if (node.Type != OctreeNodeType.Node_Internal)
+        if(!node.IsInternal)
         {
             node.drawInfo.index = vertexBuffer.Count;
 
-            vertexBuffer.Add(new MeshVertex(node.drawInfo.position, node.drawInfo.averageNormal));
+            vertexBuffer.Add(new float3x2(node.drawInfo.position,node.drawInfo.averageNormal));
         }
     }
 
-    public static void ContourProcessEdge(OctreeNode[] node, int dir, List<int> indexBuffer)
+    public static void ContourProcessEdge(Node[] node,int dir,List<int> indexBuffer)
     {
         int minSize = 1000000;		// arbitrary big number
         int minIndex = 0;
-        int[] indices = new int[4] { -1, -1, -1, -1 };
         bool flip = false;
-        bool[] signChange = new bool[4] { false, false, false, false };
+        int4 indices = -1;
+        bool4 signChange = false;
 
-        for (int i = 0; i < 4; i++)
+        for(int i = 0; i < 4; i++)
         {
             int edge = processEdgeMask[dir][i];
-            int c1 = edgevmap[edge][0];
-            int c2 = edgevmap[edge][1];
+            int2 c = edgevmap[edge];
 
-            int m1 = (node[i].drawInfo.corners >> c1) & 1;
-            int m2 = (node[i].drawInfo.corners >> c2) & 1;
+            int m1 = (node[i].drawInfo.corners >> c.x) & 1;
+            int m2 = (node[i].drawInfo.corners >> c.y) & 1;
 
-            if (node[i].size < minSize)
+            if(node[i].size < minSize)
             {
                 minSize = node[i].size;
                 minIndex = i;
@@ -316,9 +272,9 @@ public class Octree
                 (m1 != MATERIAL_AIR && m2 == MATERIAL_AIR);
         }
 
-        if (signChange[minIndex])
+        if(signChange[minIndex])
         {
-            if (!flip)
+            if(!flip)
             {
                 indexBuffer.Add(indices[0]);
                 indexBuffer.Add(indices[1]);
@@ -338,171 +294,125 @@ public class Octree
                 indexBuffer.Add(indices[2]);
                 indexBuffer.Add(indices[3]);
             }
-
         }
     }
 
-    public static void ContourEdgeProc(OctreeNode[] node, int dir, List<int> indexBuffer)
+    public static void ContourEdgeProc(Node[] node,int dir,List<int> indexBuffer)
     {
-        if (node[0] == null || node[1] == null || node[2] == null || node[3] == null)
+        if(node[0] == null || node[1] == null || node[2] == null || node[3] == null)
         {
             return;
         }
 
-        if (node[0].Type != OctreeNodeType.Node_Internal &&
-            node[1].Type != OctreeNodeType.Node_Internal &&
-            node[2].Type != OctreeNodeType.Node_Internal &&
-            node[3].Type != OctreeNodeType.Node_Internal)
+        if(!node[0].IsInternal && !node[1].IsInternal && !node[2].IsInternal && !node[3].IsInternal)
         {
-            ContourProcessEdge(node, dir, indexBuffer);
+            ContourProcessEdge(node,dir,indexBuffer);
+            return;
         }
-        else
+
+        for(int i = 0; i < 2; i++)
         {
-            for (int i = 0; i < 2; i++)
+            var edgeNodes = new Node[4];
+            int4 c = edgeProcEdgeMask[dir][i];
+
+            int4 nodeIndexes = -1;
+
+            for(int j = 0; j < 4; j++)
             {
-                OctreeNode[] edgeNodes = new OctreeNode[4];
-                int[] c = new int[4]
-			{
-				edgeProcEdgeMask[dir][i][0],
-				edgeProcEdgeMask[dir][i][1],
-				edgeProcEdgeMask[dir][i][2],
-				edgeProcEdgeMask[dir][i][3],
-			};
+                if(node[j].IsPsuedoOrLeaf)
+                    edgeNodes[j] = node[j];
+                else edgeNodes[j] = node[j].children[c[j]];
 
-                for (int j = 0; j < 4; j++)
-                {
-                    if (node[j].Type == OctreeNodeType.Node_Leaf || node[j].Type == OctreeNodeType.Node_Psuedo)
-                    {
-                        edgeNodes[j] = node[j];
-                    }
-                    else
-                    {
-                        edgeNodes[j] = node[j].children[c[j]];
-                    }
-                }
-
-                ContourEdgeProc(edgeNodes, edgeProcEdgeMask[dir][i][4], indexBuffer);
+                if(!node[j].IsPsuedoOrLeaf)
+                    nodeIndexes[j] = c[j];
             }
+
+            ContourEdgeProc(edgeNodes,dir,indexBuffer);
         }
     }
 
-    public static void ContourFaceProc(OctreeNode[] node, int dir, List<int> indexBuffer)
+    public static void ContourFaceProc(Node[] node,int dir,List<int> indexBuffer)
     {
-        if (node[0] == null || node[1] == null)
+        if(node[0] == null || node[1] == null)
+            return;
+
+        if(!node[0].IsInternal && !node[1].IsInternal)
+            return;
+
+        for(int i = 0; i < 4; i++)
+        {
+            var faceNodes = new Node[2];
+            int2 c = faceProcFaceMask[dir][i];
+
+            for(int j = 0; j < 2; j++)
+            {
+                if(!node[j].IsInternal)
+                    faceNodes[j] = node[j];
+                else faceNodes[j] = node[j].children[c[j]];
+            }
+
+            ContourFaceProc(faceNodes,dir,indexBuffer);
+        }
+
+        int4x2 orders = new int4x2 (new int4(0, 0, 1, 1),new int4(0, 1, 0, 1));
+        ref var masks = ref faceProcEdgeMask[dir];
+        for(int i = 0; i < 4; i++)
+        {
+            ref var control = ref masks.control[i];
+            ref var mask = ref masks.mask[i];
+
+            var edgeNodes = new Node[4];
+            int4 order = orders[control[0]];
+            for(int j = 0; j < 4; j++)
+            {
+                var n = node[order[j]];
+                if(n.IsPsuedoOrLeaf)
+                    edgeNodes[j] = n;
+                else edgeNodes[j] = n.children[mask[j]];
+            }
+
+            ContourEdgeProc(edgeNodes,control[1],indexBuffer);
+        }
+    }
+
+    public static void ContourCellProc(Node node,List<int> indexBuffer)
+    {
+        if(node == null || !node.IsInternal)
         {
             return;
         }
 
-        if (node[0].Type == OctreeNodeType.Node_Internal ||
-            node[1].Type == OctreeNodeType.Node_Internal)
+        for(int i = 0; i < 8; i++)
         {
-            for (int i = 0; i < 4; i++)
+            ContourCellProc(node.children[i],indexBuffer);
+        }
+
+        for(int i = 0; i < 12; i++)
+        {
+            var faceNodes = new Node[2];
+            var c = cellProcFaceMask[i];
+
+            faceNodes[0] = node.children[c[0]];
+            faceNodes[1] = node.children[c[1]];
+
+            ContourFaceProc(faceNodes,i / 4,indexBuffer);
+        }
+
+        for(int i = 0; i < 6; i++)
+        {
+            var edgeNodes = new Node[4];
+
+            int4 c = cellProcEdgeMask[i];
+            for(int j = 0; j < 4; j++)
             {
-                OctreeNode[] faceNodes = new OctreeNode[2];
-                int[] c = new int[2] 
-			{
-				faceProcFaceMask[dir][i][0], 
-				faceProcFaceMask[dir][i][1], 
-			};
-
-                for (int j = 0; j < 2; j++)
-                {
-                    if (node[j].Type != OctreeNodeType.Node_Internal)
-                    {
-                        faceNodes[j] = node[j];
-                    }
-                    else
-                    {
-                        faceNodes[j] = node[j].children[c[j]];
-                    }
-                }
-
-                ContourFaceProc(faceNodes, faceProcFaceMask[dir][i][2], indexBuffer);
+                edgeNodes[j] = node.children[c[j]];
             }
 
-            int[][] orders = new int[2][] 
-		{
-			new int[4]{ 0, 0, 1, 1 },
-			new int[4]{ 0, 1, 0, 1 },
-		};
-
-            for (int i = 0; i < 4; i++)
-            {
-                OctreeNode[] edgeNodes = new OctreeNode[4];
-                int[] c = new int[4]
-			{
-				faceProcEdgeMask[dir][i][1],
-				faceProcEdgeMask[dir][i][2],
-				faceProcEdgeMask[dir][i][3],
-				faceProcEdgeMask[dir][i][4],
-			};
-
-                int[] order = orders[faceProcEdgeMask[dir][i][0]];
-                for (int j = 0; j < 4; j++)
-                {
-                    if (node[order[j]].Type == OctreeNodeType.Node_Leaf ||
-                        node[order[j]].Type == OctreeNodeType.Node_Psuedo)
-                    {
-                        edgeNodes[j] = node[order[j]];
-                    }
-                    else
-                    {
-                        edgeNodes[j] = node[order[j]].children[c[j]];
-                    }
-                }
-
-                ContourEdgeProc(edgeNodes, faceProcEdgeMask[dir][i][5], indexBuffer);
-            }
+            ContourEdgeProc(edgeNodes,i / 2,indexBuffer);
         }
     }
 
-    public static void ContourCellProc(OctreeNode node, List<int> indexBuffer)
-    {
-        if (node == null)
-        {
-            return;
-        }
-
-        if (node.Type == OctreeNodeType.Node_Internal)
-        {
-            for (int i = 0; i < 8; i++)
-            {
-                ContourCellProc(node.children[i], indexBuffer);
-            }
-
-            for (int i = 0; i < 12; i++)
-            {
-                OctreeNode[] faceNodes = new OctreeNode[2];
-                int[] c = { cellProcFaceMask[i][0], cellProcFaceMask[i][1] };
-
-                faceNodes[0] = node.children[c[0]];
-                faceNodes[1] = node.children[c[1]];
-
-                ContourFaceProc(faceNodes, cellProcFaceMask[i][2], indexBuffer);
-            }
-
-            for (int i = 0; i < 6; i++)
-            {
-                OctreeNode[] edgeNodes = new OctreeNode[4];
-                int[] c = new int[4]
-			{
-				cellProcEdgeMask[i][0],
-				cellProcEdgeMask[i][1],
-				cellProcEdgeMask[i][2],
-				cellProcEdgeMask[i][3],
-			};
-
-                for (int j = 0; j < 4; j++)
-                {
-                    edgeNodes[j] = node.children[c[j]];
-                }
-
-                ContourEdgeProc(edgeNodes, cellProcEdgeMask[i][4], indexBuffer);
-            }
-        }
-    }
-
-    public static Vector3 ApproximateZeroCrossingPosition(Vector3 p0, Vector3 p1)
+    public static float3 ApproximateZeroCrossingPosition(float3 p0,float3 p1)
     {
         // approximate the zero crossing by finding the min value along the edge
         float minValue = 100000f;
@@ -510,11 +420,11 @@ public class Octree
         float currentT = 0f;
         const int steps = 8;
         const float increment = 1f / (float)steps;
-        while (currentT <= 1.0f)
+        while(currentT <= 1.0f)
         {
-            Vector3 p = p0 + ((p1 - p0) * currentT);
+            float3 p = p0 + ((p1 - p0) * currentT);
             float density = Mathf.Abs(glm.Density_Func(p));
-            if (density < minValue)
+            if(density < minValue)
             {
                 minValue = density;
                 t = currentT;
@@ -529,30 +439,39 @@ public class Octree
     public static Vector3 CalculateSurfaceNormal(Vector3 p)
     {
         float H = 0.001f;
-        float dx = glm.Density_Func(p + new Vector3(H, 0.0f, 0.0f)) - glm.Density_Func(p - new Vector3(H, 0.0f, 0.0f));
-        float dy = glm.Density_Func(p + new Vector3(0.0f, H, 0.0f)) - glm.Density_Func(p - new Vector3(0.0f, H, 0.0f));
-        float dz = glm.Density_Func(p + new Vector3(0.0f, 0.0f, H)) - glm.Density_Func(p - new Vector3(0.0f, 0.0f, H));
+        float dx = glm.Density_Func(p + new Vector3(H,0,0)) - glm.Density_Func(p - new Vector3(H,0,0));
+        float dy = glm.Density_Func(p + new Vector3(0,H,0)) - glm.Density_Func(p - new Vector3(0,H,0));
+        float dz = glm.Density_Func(p + new Vector3(0,0,H)) - glm.Density_Func(p - new Vector3(0,0,H));
 
-        return new Vector3(dx, dy, dz).normalized;
+        return new Vector3(dx,dy,dz).normalized;
     }
 
-    public static OctreeNode ConstructLeaf(OctreeNode leaf)
+    public struct DrawInfo
     {
-        if (leaf == null || leaf.size != 1)
+        public int index;
+        public int corners;
+        public float3 position;
+        public float3 averageNormal;
+        public QefSolver.QefData qef;
+    }
+
+    public static Node ConstructLeaf(Node leaf)
+    {
+        if(leaf == null || leaf.size != 1)
         {
             return null;
         }
 
         int corners = 0;
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            Vector3 cornerPos = leaf.min + CHILD_MIN_OFFSETS[i];
+            float3 cornerPos = leaf.min + CHILD_MIN_OFFSETS[i];
             float density = glm.Density_Func(cornerPos);
-            int material = density < 0.0f ? MATERIAL_SOLID : MATERIAL_AIR;
+            int material = density < 0 ? MATERIAL_SOLID : MATERIAL_AIR;
             corners |= (material << i);
         }
 
-        if (corners == 0 || corners == 255)
+        if(corners == 0 || corners == 255)
         {
             // voxel is full inside or outside the volume
             //delete leaf
@@ -565,47 +484,41 @@ public class Octree
         const int MAX_CROSSINGS = 6;
         int edgeCount = 0;
         Vector3 averageNormal = Vector3.zero;
-        QefSolver qef = new QefSolver();
+        var qef = new QefSolver();
 
-        for (int i = 0; i < 12 && edgeCount < MAX_CROSSINGS; i++)
+        for(int i = 0; i < 12 && edgeCount < MAX_CROSSINGS; i++)
         {
-            int c1 = edgevmap[i][0];
-            int c2 = edgevmap[i][1];
+            int2 c = edgevmap[i];
 
-            int m1 = (corners >> c1) & 1;
-            int m2 = (corners >> c2) & 1;
+            int m1 = (corners >> c.x) & 1;
+            int m2 = (corners >> c.y) & 1;
 
-            if ((m1 == MATERIAL_AIR && m2 == MATERIAL_AIR) || (m1 == MATERIAL_SOLID && m2 == MATERIAL_SOLID))
+            if((m1 == MATERIAL_AIR && m2 == MATERIAL_AIR) || (m1 == MATERIAL_SOLID && m2 == MATERIAL_SOLID))
             {
                 // no zero crossing on this edge
                 continue;
             }
 
-            Vector3 p1 = leaf.min + CHILD_MIN_OFFSETS[c1];
-            Vector3 p2 = leaf.min + CHILD_MIN_OFFSETS[c2];
-            Vector3 p = ApproximateZeroCrossingPosition(p1, p2);
-            Vector3 n = CalculateSurfaceNormal(p);
-            qef.add(p.x, p.y, p.z, n.x, n.y, n.z);
+            var p1 = leaf.min + CHILD_MIN_OFFSETS[c.x];
+            var p2 = leaf.min + CHILD_MIN_OFFSETS[c.y];
+            var p = ApproximateZeroCrossingPosition(p1,p2);
+            var n = CalculateSurfaceNormal(p);
+            qef.add(p,n);
 
             averageNormal += n;
 
             edgeCount++;
         }
 
-        Vector3 qefPosition = Vector3.zero;
-        qef.solve(qefPosition, QEF_ERROR, QEF_SWEEPS, QEF_ERROR);
+        qef.solve(out var qefPosition,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
 
-        OctreeDrawInfo drawInfo = new OctreeDrawInfo();
+        var drawInfo = new DrawInfo();
         drawInfo.corners = 0;
         drawInfo.index = -1;
-        drawInfo.position = new Vector3(qefPosition.x, qefPosition.y, qefPosition.z);
+        drawInfo.position = qefPosition;
         drawInfo.qef = qef.getData();
 
-        Vector3 min = leaf.min;
-        Vector3 max = new Vector3(leaf.min.x + leaf.size, leaf.min.y + leaf.size, leaf.min.z + leaf.size);
-        if (drawInfo.position.x < min.x || drawInfo.position.x > max.x ||
-            drawInfo.position.y < min.y || drawInfo.position.y > max.y ||
-            drawInfo.position.z < min.z || drawInfo.position.z > max.z)
+        if(math.any(drawInfo.position < leaf.min) || math.any(drawInfo.position > leaf.min + leaf.size))
         {
             drawInfo.position = qef.getMassPoint();
         }
@@ -613,151 +526,130 @@ public class Octree
         drawInfo.averageNormal = Vector3.Normalize(averageNormal / (float)edgeCount);
         drawInfo.corners = corners;
 
-        leaf.Type = OctreeNodeType.Node_Leaf;
+        leaf.Type = NodeType.Leaf;
         leaf.drawInfo = drawInfo;
 
         return leaf;
     }
 
-    public static OctreeNode ConstructOctreeNodes(OctreeNode node)
+    public static async Awaitable<Node> ConstructOctreeNodes(Node node)
     {
-        if (node == null)
-        {
+        await Awaitable.BackgroundThreadAsync();
+        if(node == null)
             return null;
-        }
 
-        if (node.size == 1)
-        {
+        if(node.size == 1)
             return ConstructLeaf(node);
-        }
 
         int childSize = node.size / 2;
         bool hasChildren = false;
 
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            OctreeNode child = new OctreeNode();
+            var child = new Node();
             child.size = childSize;
             child.min = node.min + (CHILD_MIN_OFFSETS[i] * childSize);
-            child.Type = OctreeNodeType.Node_Internal;
+            child.Type = NodeType.Internal;
 
-            node.children[i] = ConstructOctreeNodes(child);
-            hasChildren |= (node.children[i] != null);
+            node.children[i] = await ConstructOctreeNodes(child);
+            hasChildren |= node.children[i] != null;
         }
 
-        if (!hasChildren)
-        {
-            //delete leaf
-            //setting as null isn't required by the GC in C#... but its in the original, so why not!
+        if(!hasChildren)
             node = null;
-            return null;
-        }
 
         return node;
     }
 
-    public static OctreeNode BuildOctree(Vector3 min, int size, float threshold)
+    public static async Awaitable<Node> BuildOctree(float3 min,int size,float threshold)
     {
-        Debug.Log(string.Format("Building Octree at {0}, with size of {1} and threshold of {2}", min, size, threshold));
+        Debug.Log(string.Format("Building Octree at {0}, with size of {1} and threshold of {2}",min,size,threshold));
 
-        OctreeNode root = new OctreeNode();
+        var root = new Node(NodeType.Internal);
         root.min = min;
         root.size = size;
-        root.Type = OctreeNodeType.Node_Internal;
 
-        root = ConstructOctreeNodes(root);
-        root = SimplifyOctree(root, threshold);
-
+        root = await ConstructOctreeNodes(root);
+        root = SimplifyOctree(root,threshold);
         return root;
     }
 
-    public static void GenerateMeshFromOctree(OctreeNode node, List<MeshVertex> vertexBuffer, List<int> indexBuffer)
+    public static void GenerateMeshFromOctree(Node node,ref List<float3x2> vertexBuffer,ref List<int> indexBuffer)
     {
-        if (node == null)
-        {
+        if(node == null)
             return;
-        }
 
-        vertexBuffer = new List<MeshVertex>();
-        indexBuffer = new List<int>();
+        vertexBuffer ??= new List<float3x2>();
+        indexBuffer ??= new List<int>();
 
-        GenerateVertexIndices(node, vertexBuffer);
-        ContourCellProc(node, indexBuffer);
-
-        GameObject go = new GameObject("Mesh");
-        Mesh mesh;
-        MeshFilter filter;
-        MeshRenderer meshRenderer;
-
-        meshRenderer = go.AddComponent<MeshRenderer>();
-        filter = go.AddComponent<MeshFilter>();
-
-        meshRenderer.sharedMaterial = Resources.Load("Default") as Material;
-
-        Vector3[] vertArray = new Vector3[vertexBuffer.Count];
-        Vector2[] uvs = new Vector2[vertexBuffer.Count];
-        for (int i = 0; i < vertexBuffer.Count; i++)
-        {
-            vertArray[i] = vertexBuffer[i].xyz;
-            uvs[i] = new Vector2(vertexBuffer[i].xyz.x, vertexBuffer[i].xyz.z);
-        }
-
-        Vector3[] normsArray = new Vector3[vertexBuffer.Count];
-        for (int i = 0; i < vertexBuffer.Count; i++)
-        {
-            normsArray[i] = vertexBuffer[i].normal;
-        }
-
-        mesh = filter.mesh;
-        mesh.vertices = vertArray;
-        mesh.uv = uvs;
-        mesh.triangles = indexBuffer.ToArray();
-        mesh.normals = normsArray;
-        mesh.RecalculateBounds();
-
-        for (int i = 0; i < 8; i++)
-        {
-            Debug.Log("vert: " + vertArray[i]);
-        }
-
-        for (int i = 0; i < 8; i++)
-        {
-            Debug.Log("index: " + indexBuffer[i]);
-        }
-
+        GenerateVertexIndices(node,vertexBuffer);
+        ContourCellProc(node,indexBuffer);
     }
 
-    public static void DrawOctree(OctreeNode rootNode, int colorIndex)
+    public static void DrawOctree(Node rootNode,int colorIndex)
     {
-        if (rootNode != null && rootNode.children.Length > 0)
+        if(rootNode != null && rootNode.children.Length > 0)
         {
-            for (int i = 0; i < rootNode.children.Length; i++)
+            for(int i = 0; i < rootNode.children.Length; i++)
             {
-                DrawOctree(rootNode.children[i], colorIndex + 1);
+                DrawOctree(rootNode.children[i],colorIndex + 1);
             }
 
-            DrawOctreeNode(rootNode, drawColors[colorIndex]);
+            DrawOctreeNode(rootNode,drawColors[colorIndex]);
         }
     }
 
-    public static void DrawOctreeNode(OctreeNode node, Color color)
+    public static void DrawOctreeNode(Node node,Color color)
     {
-        DrawCubeInLines.DrawCube(node.min, node.size, color);
+        DrawCubeInLines.DrawCube(node.min,node.size,color);
     }
 
-    public static void DestroyOctree(OctreeNode node)
+    public static void DestroyOctree(ref Node node)
     {
-        if (node == null)
+        if(node == null)
         {
             return;
         }
 
-        for (int i = 0; i < 8; i++)
+        for(int i = 0; i < 8; i++)
         {
-            DestroyOctree(node.children[i]);
+            DestroyOctree(ref node.children[i]);
         }
 
         node = null;
     }
 
+    public enum NodeType
+    {
+        None,
+        Internal,
+        Psuedo,
+        Leaf
+    }
+
+    public class Node
+    {
+        public NodeType Type;
+        public bool IsInternal => Type == NodeType.Internal;
+        public bool IsPsuedoOrLeaf => Type == NodeType.Psuedo || Type == NodeType.Leaf;
+
+        public float3 min;
+        public int size;
+        public Node[] children;
+        public DrawInfo drawInfo;
+
+        public Node(NodeType _type = NodeType.None)
+        {
+            Type = _type;
+            min = 0;
+            size = 0;
+            drawInfo = new();
+
+            children = new Node[8];
+            for(int i = 0; i < 8; i++)
+            {
+                children[i] = null;
+            }
+        }
+    }
 }

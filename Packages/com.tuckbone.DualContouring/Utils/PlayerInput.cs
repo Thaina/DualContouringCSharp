@@ -1,11 +1,10 @@
-﻿using UnityEngine;
+﻿using JetBrains.Annotations;
+using UnityEngine;
 
 namespace Code.Utils
 {
     public static class PlayerInput
     {
-        static Vector3 movementVector;
-
         enum RotationAxes { MouseXAndY = 0, MouseX = 1, MouseY = 2 }
         static RotationAxes axes = RotationAxes.MouseXAndY;
         static float sensitivityX = 5F;
@@ -23,29 +22,27 @@ namespace Code.Utils
             transform = Camera.main.transform;
         }
 
-        public static void Update()
+        public static void Update(out Vector3 movementVector)
         {
             movementVector = Vector3.zero;
 
             if (Input.GetKey(KeyCode.W))
-                movementVector += Camera.main.transform.forward * 7;
+                movementVector += Vector3.forward;
 
             if (Input.GetKey(KeyCode.S))
-                movementVector -= Camera.main.transform.forward * 7;
+                movementVector -= Vector3.forward;
 
             if (Input.GetKey(KeyCode.A))
-                movementVector -= Camera.main.transform.right * 7;
+                movementVector -= Vector3.right;
 
             if (Input.GetKey(KeyCode.D))
-                movementVector += Camera.main.transform.right * 7;
+                movementVector += Vector3.right;
 
             if (Input.GetKey(KeyCode.Space))
-                movementVector += Camera.main.transform.up * 7;
+                movementVector += Vector3.up;
 
             if (Input.GetKey(KeyCode.LeftShift))
-                movementVector -= Camera.main.transform.up * 7;
-
-            Camera.main.transform.position = Camera.main.transform.position + movementVector * Time.deltaTime;
+                movementVector -= Vector3.up;
 
             CheckMouseInput();
         }

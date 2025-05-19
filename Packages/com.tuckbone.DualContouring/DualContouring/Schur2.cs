@@ -27,9 +27,9 @@
 
 public static class Schur2
 {
-    public static void rot01(SMat3 m, float c, float s)
+    public static void rot01(in SMat3 m,out float c,out float s)
     {
-        SVD.calcSymmetricGivensCoefficients(m.m00, m.m01, m.m11, c, s);
+        SVD.calcSymmetricGivensCoefficients(m.m00, m.m01, m.m11,out c,out s);
         float cc = c * c;
         float ss = s * s;
         float mix = 2 * c * s * m.m01;
@@ -37,9 +37,9 @@ public static class Schur2
                        ss * m.m00 + mix + cc * m.m11, s * m.m02 + c * m.m12, m.m22);
     }
 
-    public static void rot02(SMat3 m, float c, float s)
+    public static void rot02(in SMat3 m,out float c,out float s)
     {
-        SVD.calcSymmetricGivensCoefficients(m.m00, m.m02, m.m22, c, s);
+        SVD.calcSymmetricGivensCoefficients(m.m00, m.m02, m.m22,out c,out s);
         float cc = c * c;
         float ss = s * s;
         float mix = 2 * c * s * m.m02;
@@ -47,9 +47,9 @@ public static class Schur2
                        m.m11, s * m.m01 + c * m.m12, ss * m.m00 + mix + cc * m.m22);
     }
 
-    public static void rot12(SMat3 m, float c, float s)
+    public static void rot12(in SMat3 m,out float c,out float s)
     {
-        SVD.calcSymmetricGivensCoefficients(m.m11, m.m12, m.m22, c, s);
+        SVD.calcSymmetricGivensCoefficients(m.m11, m.m12, m.m22,out c,out s);
         float cc = c * c;
         float ss = s * s;
         float mix = 2 * c * s * m.m12;
