@@ -125,135 +125,79 @@ public static partial class Octree
     );
     #endregion
 
-    [BurstCompile]
-    public struct OctreeJob : IJobFor, INativeDisposable
+    static int2 rshift(int2 l,int2 r) => new(l.x >> r.x,l.y >> r.y);
+
+	public struct GenMeshJob : IJobFor, INativeDisposable
     {
-        public float3 min;
-        public int size;
-        public float threshold;
-
         public NativeList<Node> nodes;
+        public NativeList<int> nodeVertexIndex;
         public NativeList<float3x2> vertexBuffer;
-        public NativeList<int> indexBuffer;
-
-        bool SimplifyOctree(ref Node node,float threshold)
+        [WriteOnly]
+        public NativeList<int3> indexBuffer;
+        public void Execute(int index)
         {
-            if(node.Type == NodeType.None)
-                return false;
+            ref var root = ref nodes.ElementAt(0);
+            if(root.Type == NodeType.None)
+                return;
 
-            if(!node.IsInternal)
-                return true;
+            nodeVertexIndex.Resize(nodes.Length,NativeArrayOptions.UninitializedMemory);
 
-            var qef = new QefSolver();
-            int4x2 signs = -1;
-            int midsign = -1;
-            int edgeCount = 0;
-            bool isCollapsible = true;
-
-            for(int i = 0; i < 8; i++)
-            {
-                ref var child = ref node.children[nodes,i];
-                if(!SimplifyOctree(ref child,threshold))
-                    continue;
-
-                if(child.IsInternal)
-                    isCollapsible = false;
-                else
-                {
-                    qef.add(child.drawInfo.qef);
-
-                    midsign = (child.drawInfo.corners >> (7 - i)) & 1;
-                    signs[i / 4][i % 4] = (child.drawInfo.corners >> i) & 1;
-
-                    edgeCount++;
-                }
-            }
-
-            if(!isCollapsible)
-            {
-                // at least one child is an internal node, can't collapse
-                return true;
-            }
-
-            qef.solve(out var position,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
-            float error = qef.getError();
-
-            // at this point the masspoint will actually be a sum, so divide to make it the average
-            if(error > threshold)
-            {
-                // this collapse breaches the threshold
-                return true;
-            }
-
-            if(math.any(position < node.min) || math.any(position > (node.min + node.size)))
-            {
-                position = qef.getMassPoint();
-            }
-
-            // change the node from an internal node to a 'psuedo leaf' node
-            var drawInfo = new DrawInfo();
-            drawInfo.corners = 0;
-            drawInfo.index = -1;
-
-            for(int i = 0; i < 8; i++)
-            {
-                int s = signs[i / 4][i % 4];
-                if(s == -1)
-                    s = midsign;
-
-                drawInfo.corners |= s << i;
-            }
-
-            drawInfo.averageNormal = Vector3.zero;
-            for(int i = 0; i < 8; i++)
-            {
-                ref var child = ref node.children[nodes,i];
-                if(child.Type == NodeType.None && child.IsPsuedoOrLeaf)
-                {
-                    drawInfo.averageNormal += child.drawInfo.averageNormal;
-                }
-            }
-
-            drawInfo.averageNormal = math.normalize(drawInfo.averageNormal);
-            drawInfo.position = position;
-            drawInfo.qef = qef.getData();
-
-            for(int i = 0; i < 8; i++)
-            {
-                DestroyOctree(ref node.children[nodes,i]);
-            }
-
-            node.Type = NodeType.Psuedo;
-            node.drawInfo = drawInfo;
-
-            return true;
+            // Generate mesh data
+            GenerateVertexIndices(0);
+            ContourCellProc(root);
         }
 
-        public void GenerateVertexIndices(ref Node node)
+        public void GenerateVertexIndices(int nodeIndex)
         {
+            ref var node = ref nodes.ElementAt(nodeIndex);
             if(node.Type == NodeType.None)
-            {
                 return;
-            }
 
             if(node.Type != NodeType.Leaf)
             {
                 for(int i = 0; i < 8; i++)
                 {
-                    GenerateVertexIndices(ref node.children[nodes,i]);
+                    GenerateVertexIndices(node.children.NodeIndex(i));
                 }
             }
 
-            if (!node.IsInternal)
+            if(node.IsInternal)
+                return;
+
+            nodeVertexIndex[nodeIndex] = vertexBuffer.Length;
+            vertexBuffer.Add(new float3x2(node.drawInfo.position,node.drawInfo.averageNormal));
+        }
+
+        void ContourCellProc(in Node node)
+        {
+            if(node.Type == NodeType.None || !node.IsInternal)
             {
-                node.drawInfo.index = vertexBuffer.Length;
-                vertexBuffer.Add(new float3x2(node.drawInfo.position, node.drawInfo.averageNormal));
+                return;
+            }
+
+            for(int i = 0; i < 8; i++)
+            {
+                ContourCellProc(node.children[nodes,i]);
+            }
+
+            for(int i = 0; i < 12; i++)
+            {
+                var c = cellProcFaceMask[i];
+                var faceNodes = new Chunk2<Node>() { indexes = node.childIndex + c };
+                ContourFaceProc(faceNodes,i / 4);
+            }
+
+            for(int i = 0; i < 6; i++)
+            {
+                int4 c = cellProcEdgeMask[i];
+                var edgeNodes = new Chunk4<Node>() { indexes = node.childIndex + c };
+                ContourEdgeProc(edgeNodes,i / 2);
             }
         }
 
         public void ContourProcessEdge(in Chunk4<Node> node,int dir)
         {
-            int minSize = 1000000;      // arbitrary big number
+            int minSize = int.MaxValue;
             int minIndex = 0;
             bool flip = false;
             int4 indices = -1;
@@ -261,48 +205,26 @@ public static partial class Octree
 
             for(int i = 0; i < 4; i++)
             {
-                int edge = processEdgeMask[dir][i];
-                int2 c = edgevmap[edge];
+                ref var child = ref node[nodes,i];
 
-                int m1 = (node[nodes,i].drawInfo.corners >> c.x) & 1;
-                int m2 = (node[nodes,i].drawInfo.corners >> c.y) & 1;
+                int2 m = rshift(child.drawInfo.corners,edgevmap[processEdgeMask[dir][i]]) & 1;
 
-                if(node[nodes,i].size < minSize)
+                if(child.size < minSize)
                 {
-                    minSize = node[nodes,i].size;
+                    minSize = child.size;
                     minIndex = i;
-                    flip = m1 != MATERIAL_AIR;
+                    flip = m.x != MATERIAL_AIR;
                 }
 
-                indices[i] = node[nodes,i].drawInfo.index;
+                indices[i] = nodeVertexIndex[node.indexes[i]];
 
-                signChange[i] =
-                    (m1 == MATERIAL_AIR && m2 != MATERIAL_AIR) ||
-                    (m1 != MATERIAL_AIR && m2 == MATERIAL_AIR);
+                signChange[i] = (m.x != m.y) && math.any(m == MATERIAL_AIR);
             }
 
             if(signChange[minIndex])
             {
-                if(!flip)
-                {
-                    indexBuffer.Add(indices[0]);
-                    indexBuffer.Add(indices[1]);
-                    indexBuffer.Add(indices[3]);
-
-                    indexBuffer.Add(indices[0]);
-                    indexBuffer.Add(indices[3]);
-                    indexBuffer.Add(indices[2]);
-                }
-                else
-                {
-                    indexBuffer.Add(indices[0]);
-                    indexBuffer.Add(indices[3]);
-                    indexBuffer.Add(indices[1]);
-
-                    indexBuffer.Add(indices[0]);
-                    indexBuffer.Add(indices[2]);
-                    indexBuffer.Add(indices[3]);
-                }
+                indexBuffer.Add(flip ? indices.xwy : indices.xyw);
+                indexBuffer.Add(flip ? indices.xzw : indices.xwz);
             }
         }
 
@@ -378,34 +300,126 @@ public static partial class Octree
             }
         }
 
-        void ContourCellProc(ref Node node)
+        public void Dispose() => Dispose(default);
+        public JobHandle Dispose(JobHandle inputDeps)
         {
-            if(node.Type == NodeType.None || !node.IsInternal)
-            {
-                return;
-            }
+            return JobHandle.CombineDependencies(
+                nodeVertexIndex.Dispose(inputDeps),
+                vertexBuffer.Dispose(inputDeps),
+                indexBuffer.Dispose(inputDeps)
+            );
+        }
+    }
+
+    public interface IGenerator
+    {
+        float Density_Func(float3 position);
+    }
+
+	[BurstCompile]
+    public struct OctreeJob<T> : IJobFor where T : struct,IGenerator
+    {
+        public float3 min;
+        public int size;
+        public float threshold;
+
+        public T glm;
+
+        public NativeList<Node> nodes;
+
+        bool SimplifyOctree(ref Node node,float threshold)
+        {
+            if(node.Type == NodeType.None)
+                return false;
+
+            if(!node.IsInternal)
+                return true;
+
+            var qef = new QefSolver();
+            int4x2 signs = -1;
+            int midsign = -1;
+            int edgeCount = 0;
+            bool isCollapsible = true;
 
             for(int i = 0; i < 8; i++)
             {
-                ContourCellProc(ref node.children[nodes,i]);
+                ref var child = ref node.children[nodes,i];
+                if(!SimplifyOctree(ref child,threshold))
+                    continue;
+
+                if(child.IsInternal)
+                    isCollapsible = false;
+                else
+                {
+                    qef.add(child.drawInfo.qef);
+
+                    midsign = (child.drawInfo.corners >> (7 - i)) & 1;
+                    signs[i / 4][i % 4] = (child.drawInfo.corners >> i) & 1;
+
+                    edgeCount++;
+                }
             }
 
-            for(int i = 0; i < 12; i++)
+            if(!isCollapsible)
             {
-                var c = cellProcFaceMask[i];
-                var faceNodes = new Chunk2<Node>() { indexes = node.childIndex + c };
-                ContourFaceProc(faceNodes,i / 4);
+                // at least one child is an internal node, can't collapse
+                return true;
             }
 
-            for(int i = 0; i < 6; i++)
+            qef.solve(out var position,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
+            float error = qef.getError();
+
+            // at this point the masspoint will actually be a sum, so divide to make it the average
+            if(error > threshold)
             {
-                int4 c = cellProcEdgeMask[i];
-                var edgeNodes = new Chunk4<Node>() { indexes = node.childIndex + c };
-                ContourEdgeProc(edgeNodes,i / 2);
+                // this collapse breaches the threshold
+                return true;
             }
+
+            if(math.any(position < node.min) || math.any(position > (node.min + node.size)))
+            {
+                position = qef.getMassPoint();
+            }
+
+            // change the node from an internal node to a 'psuedo leaf' node
+            var drawInfo = new DrawInfo();
+            drawInfo.corners = 0;
+
+            for(int i = 0; i < 8; i++)
+            {
+                int s = signs[i / 4][i % 4];
+                if(s == -1)
+                    s = midsign;
+
+                drawInfo.corners |= s << i;
+            }
+
+            drawInfo.averageNormal = Vector3.zero;
+            for(int i = 0; i < 8; i++)
+            {
+                ref var child = ref node.children[nodes,i];
+                if(child.Type == NodeType.None && child.IsPsuedoOrLeaf)
+                {
+                    drawInfo.averageNormal += child.drawInfo.averageNormal;
+                }
+            }
+
+            drawInfo.averageNormal = math.normalize(drawInfo.averageNormal);
+            drawInfo.position = position;
+            drawInfo.qef = qef.getData();
+
+            for(int i = 0; i < 8; i++)
+            {
+                DestroyOctree(ref node.children[nodes,i]);
+            }
+
+            node.Type = NodeType.Psuedo;
+            node.drawInfo = drawInfo;
+
+            return true;
         }
 
-        public static float3 ApproximateZeroCrossingPosition(float3 p0,float3 p1)
+        public float3 ApproximateZeroCrossingPosition(float3 p0,float3 p1)
         {
             // approximate the zero crossing by finding the min value along the edge
             float minValue = 100000f;
@@ -429,7 +443,7 @@ public static partial class Octree
             return p0 + ((p1 - p0) * t);
         }
 
-        public static Vector3 CalculateSurfaceNormal(Vector3 p)
+        public Vector3 CalculateSurfaceNormal(Vector3 p)
         {
             float H = 0.001f;
             float dx = glm.Density_Func(p + new Vector3(H,0,0)) - glm.Density_Func(p - new Vector3(H,0,0));
@@ -439,7 +453,7 @@ public static partial class Octree
             return new Vector3(dx,dy,dz).normalized;
         }
 
-        public static bool ConstructLeaf(ref Node leaf)
+        public bool ConstructLeaf(ref Node leaf)
         {
             if(leaf.Type == NodeType.None || leaf.size != 1)
             {
@@ -472,12 +486,10 @@ public static partial class Octree
 
             for(int i = 0; i < 12 && edgeCount < MAX_CROSSINGS; i++)
             {
-                int2 c = edgevmap[i];
+                var c = edgevmap[i];
+                int2 m = rshift(corners,c) & 1;
 
-                int m1 = (corners >> c.x) & 1;
-                int m2 = (corners >> c.y) & 1;
-
-                if((m1 == MATERIAL_AIR && m2 == MATERIAL_AIR) || (m1 == MATERIAL_SOLID && m2 == MATERIAL_SOLID))
+                if(math.all(m == MATERIAL_AIR) || math.all(m == MATERIAL_SOLID))
                 {
                     // no zero crossing on this edge
                     continue;
@@ -497,8 +509,6 @@ public static partial class Octree
             qef.solve(out var qefPosition,QEF_ERROR,QEF_SWEEPS,QEF_ERROR);
 
             var drawInfo = new DrawInfo();
-            drawInfo.corners = 0;
-            drawInfo.index = -1;
             drawInfo.position = qefPosition;
             drawInfo.qef = qef.getData();
 
@@ -556,29 +566,6 @@ public static partial class Octree
             // Build and simplify octree
             if (ConstructOctreeNodes(ref root))
                 SimplifyOctree(ref root, threshold);
-
-            if (root.Type == NodeType.None)
-                return;
-
-            // Generate mesh data
-            GenerateVertexIndices(ref root);
-            ContourCellProc(ref root);
-        }
-
-        public void Dispose()
-        {
-            nodes.Dispose();
-            vertexBuffer.Dispose();
-            indexBuffer.Dispose();
-        }
-
-        public JobHandle Dispose(JobHandle inputDeps)
-        {
-            return JobHandle.CombineDependencies(
-                nodes.Dispose(inputDeps),
-                vertexBuffer.Dispose(inputDeps),
-                indexBuffer.Dispose(inputDeps)
-            );
         }
 
         public void DrawOctree(ref Node node,int colorIndex)
@@ -625,12 +612,12 @@ public static partial class Octree
     public struct Chunk8<T> where T : unmanaged
     {
         public int4x2 indexes;
-        public ref T this[NativeList<T> list,int i] => ref list.ElementAt(indexes[i / 4][i % 4]);
+        public int NodeIndex(int i) => indexes[i / 4][i % 4];
+        public ref T this[NativeList<T> list,int i] => ref list.ElementAt(NodeIndex(i));
     }
 
     public struct DrawInfo
     {
-        public int index;
         public int corners;
         public float3 position;
         public float3 averageNormal;
