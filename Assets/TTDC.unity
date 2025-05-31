@@ -337,9 +337,28 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f89045a30d73b3f40833348fc06aa726, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  octreeSize: 64
+  thresholdIndex: -1
+  generator:
+    cubePos:
+      x: -1
+      y: 3
+      z: -1
+    cubeSize:
+      x: 3
+      y: 4
+      z: 2
+    spherePosSize:
+      x: 1
+      y: 3
+      z: 1
+      w: 6
+    octaves: 4
+    frequency: 0.5343
+    lacunarity: 2.2324
+    persistence: 0.68324
+  octreeSize: 32
   material: {fileID: 10302, guid: 0000000000000000f000000000000000, type: 0}
-  moveSpeed: 10
+  moveSpeed: 30
 --- !u!4 &2114122589
 Transform:
   m_ObjectHideFlags: 0

@@ -26,7 +26,6 @@
  */
 
 using System;
-using UnityEngine;
 using Unity.Mathematics;
 
 public ref struct QefSolver
@@ -36,7 +35,7 @@ public ref struct QefSolver
     private float3 atb, massPoint, x;
     private bool hasSolution;
 
-    public Vector3 getMassPoint()
+    public float3 getMassPoint()
     {
         return massPoint;
     }
@@ -86,7 +85,6 @@ public ref struct QefSolver
         ata = data.ata;
         atb = data.atb;
         float result = SVD.solveSymmetric(ata,atb - ata.vmul_symmetric(massPoint),out x,svd_tol,svd_sweeps,pinv_tol);
-        x += massPoint;
         outx = x;
         hasSolution = true;
         return result;

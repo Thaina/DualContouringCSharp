@@ -6,6 +6,7 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/Marching_Cubes/DemoScenes/ChunkVisualization.unity
-    guid: 400b22eefe6fd77488dd89c5723fd19b
+    path: Assets/TTDC.unity
+    guid: 4ef73513370e60148b47ad515be46c98
   m_configObjects: {}
+  m_UseUCBPForAssetBundles: 0
